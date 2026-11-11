@@ -1,159 +1,70 @@
-/**
- * BOT COMENTE E RECEBA NO DIRECT - Instagram
- * Palavras: Aula, Funil, Quente
- *
- * VARIAVEIS DE AMBIENTE (Netlify > Configuracao do site > Variaveis de ambiente):
- * VERIFY_TOKEN = senha de verificacao do webhook
- * ACCESS_TOKEN = token gerado no app da Meta
- * IG_USER_ID = ID numerico da conta do Instagram
- * TRIGGER_WORDS = Aula,Funil,Quente
- *
- * Para ativar: .../.netlify/functions/webhook?action=setup
- * Para conferir: .../.netlify/functions/webhook?action=status
- */
+const GRAPH = "https://graph.instagram.com/v21.0";
 
-// ===== MENSAGEM DA DM =====
-const MENSAGEM_DM =
-  "Oi, vi que você comentou no meu post, aqui está o Acesso da Aula Gratuita! " +
-  "https://funildeaquecimento.netlify.app/";
-
-// Resposta publica no proprio comentario (deixe "" para desativar)
+const PALAVRA = "site";
+const LINK =
+  "https://wa.me/5583981161874?text=Ol%C3%A1%2C%20quero%20aproveitar%20a%20Oferta%20de%20inaugura%C3%A7%C3%A3o%20da%20Brava%20ag%C3%AAncia%21";
+const MENSAGEM_DIRECT =
+  "Oi vi que você comentou no meu post! Aqui está o link com a oferta de inauguração";
 const RESPOSTA_PUBLICA = "Oi, te enviei o link na sua DM, confere lá!";
 
-const GRAPH = "https://graph.instagram.com/v23.0";
-
-function normalizar(texto) {
-  return String(texto || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .trim();
-}
-
-function json(statusCode, dados) {
-  return {
-    statusCode,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(dados, null, 2),
-  };
-}
-
 exports.handler = async (event) => {
-  const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "";
-  const ACCESS_TOKEN = process.env.ACCESS_TOKEN || "";
-  const IG_USER_ID = process.env.IG_USER_ID || "";
-  const TRIGGER_WORDS = process.env.TRIGGER_WORDS || "Aula,Funil,Quente";
+  const { VERIFY_TOKEN, ACCESS_TOKEN, IG_USER_ID } = process.env;
 
-  const params = event.queryStringParameters || {};
-  const palavras = TRIGGER_WORDS.split(",")
-    .map((p) => normalizar(p))
-    .filter(Boolean);
-
-  // ----- ROTA DE ATIVACAO: acesse ?action=setup uma unica vez -----
-  if (event.httpMethod === "GET" && params.action === "setup") {
-    const res = await fetch(
-      `${GRAPH}/${IG_USER_ID}/subscribed_apps?subscribed_fields=comments,messages`,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
-      }
-    );
-    const dados = await res.json();
-    return json(200, dados);
-  }
-
-  // ----- ROTA DE DIAGNOSTICO: acesse ?action=status para conferir -----
-  if (event.httpMethod === "GET" && params.action === "status") {
-    const res = await fetch(`${GRAPH}/${IG_USER_ID}/subscribed_apps`, {
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
-    });
-    const dados = await res.json();
-    return json(200, dados);
-  }
-
-  // ----- 1. VERIFICACAO DO WEBHOOK (a Meta faz isso uma vez) -----
+  // Validação do webhook pela Meta
   if (event.httpMethod === "GET") {
-    const modo = params["hub.mode"];
-    const token = params["hub.verify_token"];
-    const desafio = params["hub.challenge"];
-
-    if (modo === "subscribe" && token === VERIFY_TOKEN) {
-      return { statusCode: 200, body: desafio };
+    const q = event.queryStringParameters || {};
+    if (q["hub.mode"] === "subscribe" && q["hub.verify_token"] === VERIFY_TOKEN) {
+      return { statusCode: 200, body: q["hub.challenge"] };
     }
-    return { statusCode: 403, body: "Token invalido" };
+    return { statusCode: 403, body: "Token inválido" };
   }
 
-  // ----- 2. RECEBIMENTO DOS COMENTARIOS -----
-  if (event.httpMethod === "POST") {
-    let corpo;
-    try {
-      corpo = JSON.parse(event.body || "{}");
-    } catch (e) {
-      return { statusCode: 200, body: "ok" };
-    }
+  if (event.httpMethod !== "POST") {
+    return { statusCode: 405, body: "Método não permitido" };
+  }
 
-    const entradas = corpo.entry || [];
+  try {
+    const body = JSON.parse(event.body || "{}");
 
-    for (const entrada of entradas) {
-      const mudancas = entrada.changes || [];
+    for (const entry of body.entry || []) {
+      for (const change of entry.changes || []) {
+        if (change.field !== "comments") continue;
 
-      for (const mudanca of mudancas) {
-        if (mudanca.field !== "comments") continue;
+        const c = change.value || {};
+        const texto = (c.text || "").toLowerCase();
+        const autor = c.from && c.from.id;
 
-        const valor = mudanca.value || {};
-        const comentarioId = valor.id;
-        const texto = normalizar(valor.text);
-        const autorId = valor.from && valor.from.id;
+        // Ignora comentários da própria conta e comentários sem a palavra
+        if (!c.id || autor === IG_USER_ID) continue;
+        if (!new RegExp("\\b" + PALAVRA + "\\b").test(texto)) continue;
 
-        // Ignora comentarios da propria conta (evita loop)
-        if (!comentarioId || !texto) continue;
-        if (autorId && String(autorId) === String(IG_USER_ID)) continue;
+        // Direct com o link (resposta privada ao comentário)
+        await fetch(`${GRAPH}/${IG_USER_ID}/messages`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${ACCESS_TOKEN}`,
+          },
+          body: JSON.stringify({
+            recipient: { comment_id: c.id },
+            message: { text: `${MENSAGEM_DIRECT}\n\n${LINK}` },
+          }),
+        });
 
-        // Confere se o comentario tem alguma palavra de ativacao
-        const ativou = palavras.some((p) => texto.includes(p));
-        if (!ativou) continue;
-
-        // Envia a DM (resposta privada ao comentario)
-        try {
-          const resDm = await fetch(`${GRAPH}/${IG_USER_ID}/messages`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${ACCESS_TOKEN}`,
-            },
-            body: JSON.stringify({
-              recipient: { comment_id: comentarioId },
-              message: { text: MENSAGEM_DM },
-            }),
-          });
-          const dadosDm = await resDm.json();
-          console.log("DM:", JSON.stringify(dadosDm));
-        } catch (erro) {
-          console.error("Erro ao enviar DM:", erro);
-        }
-
-        // Responde publicamente o comentario
-        if (RESPOSTA_PUBLICA) {
-          try {
-            const resPub = await fetch(`${GRAPH}/${comentarioId}/replies`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${ACCESS_TOKEN}`,
-              },
-              body: JSON.stringify({ message: RESPOSTA_PUBLICA }),
-            });
-            const dadosPub = await resPub.json();
-            console.log("Resposta publica:", JSON.stringify(dadosPub));
-          } catch (erro) {
-            console.error("Erro ao responder comentario:", erro);
-          }
-        }
+        // Resposta pública no comentário
+        await fetch(`${GRAPH}/${c.id}/replies`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${ACCESS_TOKEN}`,
+          },
+          body: JSON.stringify({ message: RESPOSTA_PUBLICA }),
+        });
       }
     }
-
-    return { statusCode: 200, body: "ok" };
+  } catch (e) {
+    console.error("Erro no webhook:", e);
   }
 
-  return { statusCode: 405, body: "Metodo nao permitido" };
+  return { statusCode: 200, body: "ok" };
 };
