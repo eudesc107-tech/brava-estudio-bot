@@ -1,4 +1,4 @@
-const GRAPH = "https://graph.instagram.com/v21.0";
+const GRAPH = "https://graph.facebook.com/v21.0";
 
 const PALAVRA = "site";
 const LINK =
@@ -6,6 +6,17 @@ const LINK =
 const MENSAGEM_DIRECT =
   "Oi vi que você comentou no meu post! Aqui está o link com a oferta de inauguração";
 const RESPOSTA_PUBLICA = "Oi, te enviei o link na sua DM, confere lá!";
+
+async function chamar(url, payload) {
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const texto = await r.text();
+  console.log(url.split("?")[0], r.status, texto);
+  return r.ok;
+}
 
 exports.handler = async (event) => {
   const { VERIFY_TOKEN, ACCESS_TOKEN, IG_USER_ID } = process.env;
@@ -25,6 +36,7 @@ exports.handler = async (event) => {
 
   try {
     const body = JSON.parse(event.body || "{}");
+    const token = encodeURIComponent(ACCESS_TOKEN);
 
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
@@ -39,26 +51,24 @@ exports.handler = async (event) => {
         if (!new RegExp("\\b" + PALAVRA + "\\b").test(texto)) continue;
 
         // Direct com o link (resposta privada ao comentário)
-        await fetch(`${GRAPH}/${IG_USER_ID}/messages`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${ACCESS_TOKEN}`,
-          },
-          body: JSON.stringify({
-            recipient: { comment_id: c.id },
-            message: { text: `${MENSAGEM_DIRECT}\n\n${LINK}` },
-          }),
-        });
+        const payloadDirect = {
+          recipient: { comment_id: c.id },
+          message: { text: `${MENSAGEM_DIRECT}\n\n${LINK}` },
+        };
+
+        let enviado = await chamar(
+          `${GRAPH}/${IG_USER_ID}/messages?access_token=${token}`,
+          payloadDirect
+        );
+
+        // Plano B caso o primeiro caminho seja recusado
+        if (!enviado) {
+          await chamar(`${GRAPH}/me/messages?access_token=${token}`, payloadDirect);
+        }
 
         // Resposta pública no comentário
-        await fetch(`${GRAPH}/${c.id}/replies`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${ACCESS_TOKEN}`,
-          },
-          body: JSON.stringify({ message: RESPOSTA_PUBLICA }),
+        await chamar(`${GRAPH}/${c.id}/replies?access_token=${token}`, {
+          message: RESPOSTA_PUBLICA,
         });
       }
     }
